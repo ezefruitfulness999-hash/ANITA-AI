@@ -1,1 +1,189 @@
+name: Build ANITA APK
 
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Create ANITA project
+        run: |
+          mkdir -p app/src/main/java/com/anita/assistant
+          mkdir -p app/src/main/res/values
+
+          echo 'pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
+          rootProject.name = "ANITA"
+          include(":app")' > settings.gradle.kts
+
+          echo 'plugins {
+              id("com.android.application") version "8.7.3" apply false
+          }' > build.gradle.kts
+
+          echo 'plugins {
+              id("com.android.application")
+          }
+          android {
+              namespace = "com.anita.assistant"
+              compileSdk = 35
+              defaultConfig {
+                  applicationId = "com.anita.assistant"
+                  minSdk = 26
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+          }' > app/build.gradle.kts
+
+          echo '<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+              <application android:theme="@android:style/Theme.Material.Light.NoActionBar" android:label="ANITA">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN"/>
+                          <category android:name="android.intent.category.LAUNCHER"/>
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>' > app/src/main/AndroidManifest.xml
+
+          echo '<resources><string name="app_name">ANITA</string></resources>' > app/src/main/res/values/strings.xml
+
+          cat > app/src/main/java/com/anita/assistant/MainActivity.java <<'EOF'
+          package com.anita.assistant;
+
+          import android.app.*;
+          import android.os.*;
+          import android.content.*;
+          import android.speech.*;
+          import android.speech.tts.*;
+          import android.widget.*;
+          import java.util.*;
+
+          public class MainActivity extends Activity {
+              TextView status;
+              TextToSpeech voice;
+
+              public void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  voice = new TextToSpeech(this, s -> {
+                      if (s == TextToSpeech.SUCCESS)
+                          voice.setLanguage(Locale.US);
+                  });
+
+                  LinearLayout layout = new LinearLayout(this);
+                  layout.setOrientation(1);
+                  layout.setPadding(35,50,35,30);
+
+                  TextView title = new TextView(this);
+                  title.setText("ANITA\nYour Personal Assistant");
+                  title.setTextSize(27);
+                  layout.addView(title);
+
+                  status = new TextView(this);
+                  status.setText("\nHello. I'm ANITA. How can I help you?");
+                  status.setTextSize(18);
+                  layout.addView(status);
+
+                  Button speak = new Button(this);
+                  speak.setText("TALK TO ANITA");
+                  speak.setOnClickListener(v -> listen());
+                  layout.addView(speak);
+
+                  setContentView(layout);
+              }
+
+              void listen() {
+                  Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+                  i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                      RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+                  i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US");
+                  try {
+                      startActivityForResult(i, 1);
+                  } catch(Exception e) {
+                      say("Voice recognition is unavailable.");
+                  }
+              }
+
+              protected void onActivityResult(int r, int c, Intent d) {
+                  super.onActivityResult(r,c,d);
+                  if(r == 1 && c == RESULT_OK && d != null) {
+                      ArrayList<String> results =
+                          d.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+                      if(results != null && !results.isEmpty())
+                          command(results.get(0));
+                  }
+              }
+
+              void command(String text) {
+                  String s = text.toLowerCase(Locale.US);
+                  status.setText("You said: " + text);
+
+                  if(s.contains("open whatsapp"))
+                      open("com.whatsapp");
+                  else if(s.contains("open youtube"))
+                      open("com.google.android.youtube");
+                  else if(s.contains("open chrome"))
+                      open("com.android.chrome");
+                  else if(s.startsWith("call ")) {
+                      String number = s.substring(5).trim();
+                      Intent i = new Intent(Intent.ACTION_DIAL,
+                          android.net.Uri.parse("tel:" + number));
+                      startActivity(i);
+                      say("Opening the phone dialer.");
+                  }
+                  else if(s.contains("settings")) {
+                      startActivity(new Intent(android.provider.Settings.ACTION_SETTINGS));
+                      say("Opening settings.");
+                  }
+                  else say("I heard you. That command is not available yet.");
+              }
+
+              void open(String p) {
+                  Intent i = getPackageManager().getLaunchIntentForPackage(p);
+                  if(i != null) startActivity(i);
+                  else say("I couldn't find that application.");
+              }
+
+              void say(String s) {
+                  status.setText(s);
+                  if(voice != null)
+                      voice.speak(s, TextToSpeech.QUEUE_FLUSH, null, "anita");
+              }
+
+              protected void onDestroy() {
+                  if(voice != null) voice.shutdown();
+                  super.onDestroy();
+              }
+          }
+          EOF
+
+      - name: Build APK
+        run: |
+          gradle wrapper --gradle-version 8.9
+          ./gradlew assembleDebug
+
+      - name: Save APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ANITA-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
